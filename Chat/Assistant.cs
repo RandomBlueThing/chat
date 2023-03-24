@@ -12,16 +12,20 @@ namespace Chat
     internal class Assistant
     {
         private readonly IOpenAIService _ai;
+        private readonly Dictionary<string, Func<string, Task<bool>>> _commands;
         private readonly List<ChatMessage> _messages = new List<ChatMessage>();
-        private static readonly string[] _quitCommands = new[] {
-            "quit",
-            "bye"
-        };
 
         public Assistant(IOpenAIService ai)
         {
             _ai = ai;
+            _commands = new Dictionary<string, Func<string, Task<bool>>>()
+            {
+                { "quit", Quit },
+                { "bye", Quit },
+                { "cfg", Cfg }
+            };
         }
+
 
         public async Task RunAsync()
         {
@@ -37,53 +41,72 @@ namespace Chat
 
                 var prompt = Console.ReadLine();
 
-                // Instead of doing this, scan a prompt -> action map, with the default action being to pass it to chat-gpt
-                if (IsQuitCommand(prompt))
+                if (prompt is not null && await ProcessAsync(prompt))
                 {
                     break;
-                }
-
-                if(prompt is not null)
-                {
-                    _messages.Add(new ChatMessage(StaticValues.ChatMessageRoles.User, prompt));
-
-                    // @TODO: Instead of pushing entire history up, just push initial prime stuff & all *recent* stuff...
-                    var completionResult = _ai.ChatCompletion.CreateCompletionAsStream(new ChatCompletionCreateRequest
-                    {
-                        Messages = _messages,
-                        Model = Models.ChatGpt3_5Turbo
-                    });
-
-                    var rs = "";
-
-                    await foreach (var completion in completionResult)
-                    {
-                        if (completion.Successful)
-                        {
-                            var content = completion.Choices.First().Message.Content;
-                            rs += content;
-                            Console.Write(content);
-                        }
-                        else
-                        {
-                            if (completion.Error == null)
-                            {
-                                throw new Exception("Unknown Error");
-                            }
-
-                            Console.WriteLine($"{completion.Error.Code}: {completion.Error.Message}");
-                        }
-                    }
-
-                    _messages.Add(new ChatMessage(StaticValues.ChatMessageRoles.Assistant, rs));
                 }
             }
         }
 
 
-        private bool IsQuitCommand(string? cmd)
+
+        private Task<bool> ProcessAsync(string prompt)
         {
-            return cmd is not null && _quitCommands.Any(c => cmd.Equals(c, StringComparison.OrdinalIgnoreCase));
+            var x = _commands.ContainsKey(prompt) 
+                ? _commands[prompt] 
+                : ProcessChatAsync;
+
+            return x(prompt);
+        }
+
+
+        private Task<bool> Quit(string arg)
+        {
+            return Task.FromResult(true);
+        }
+
+        private Task<bool> Cfg(string arg)
+        {
+            Console.WriteLine("TODO: Cfg stuff");
+            return Task.FromResult(false);
+        }
+
+
+        private async Task<bool> ProcessChatAsync(string prompt)
+        {
+            _messages.Add(new ChatMessage(StaticValues.ChatMessageRoles.User, prompt));
+
+            // @TODO: Instead of pushing entire history up, just push initial prime stuff & all *recent* stuff...
+            var completionResult = _ai.ChatCompletion.CreateCompletionAsStream(new ChatCompletionCreateRequest
+            {
+                Messages = _messages,
+                Model = Models.ChatGpt3_5Turbo
+            });
+
+            var rs = "";
+
+            await foreach (var completion in completionResult)
+            {
+                if (completion.Successful)
+                {
+                    var content = completion.Choices.First().Message.Content;
+                    rs += content;
+                    Console.Write(content);
+                }
+                else
+                {
+                    if (completion.Error == null)
+                    {
+                        throw new Exception("Unknown Error");
+                    }
+
+                    Console.WriteLine($"{completion.Error.Code}: {completion.Error.Message}");
+                }
+            }
+
+            _messages.Add(new ChatMessage(StaticValues.ChatMessageRoles.Assistant, rs));
+
+            return false;
         }
     }
 }
