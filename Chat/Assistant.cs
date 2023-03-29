@@ -1,27 +1,57 @@
 ﻿using OpenAI.GPT3.Interfaces;
 using OpenAI.GPT3.ObjectModels.RequestModels;
 using OpenAI.GPT3.ObjectModels;
+using Microsoft.Extensions.Configuration;
+using System.Text.Json.Serialization;
+using System.Text.Json;
 
 namespace Chat;
+
+internal struct TimedMessage
+{
+    public TimedMessage(string role, string message)
+    {
+        TimestampUtc = DateTime.UtcNow;
+        Role = role;
+        Message = message;
+    }
+
+    public DateTime TimestampUtc { get; set; }
+    public string Role { get; set; }
+    public string Message { get; set; }
+
+    public ChatMessage ToChatMessage()
+    {
+        return new ChatMessage(Role, Message);
+    }
+}
 
 internal class Assistant
 {
     private readonly IOpenAIService _ai;
+    private readonly IConfiguration _cfg;
     private readonly Dictionary<string, Func<string, Task<bool>>> _commands;
-    private readonly List<ChatMessage> _messages = new List<ChatMessage>();
+    private readonly TimeSpan _conversationLength;
+    private List<TimedMessage> _history = new List<TimedMessage>();
     private readonly List<ChatMessage> _prime = new List<ChatMessage>();
+    private static string _basePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "chat");
 
-    public Assistant(IOpenAIService ai)
+
+    public Assistant(IOpenAIService ai, IConfiguration cfg)
     {
         _ai = ai;
+        _cfg = cfg;
         _commands = new Dictionary<string, Func<string, Task<bool>>>(StringComparer.OrdinalIgnoreCase)
         {
             { "quit", p => Task.FromResult(true) },
             { "bye", p => Task.FromResult(true) },
+            { "exit", p => Task.FromResult(true) },
             { "cfg", Cfg },
             { "cls", p => { Console.Clear(); return Task.FromResult(false); } },
+            { "!forget", p => { Console.WriteLine("Dropping history"); _history.Clear(); return Task.FromResult(false); } },
             { "", p => Task.FromResult(false) }
         };
+        _conversationLength = TimeSpan.Parse(_cfg["conversation-length"] ?? "00:15:00");
     }
 
 
@@ -29,51 +59,47 @@ internal class Assistant
     {
         // Prime history
         _prime.AddRange(new[] {
-            new ChatMessage(StaticValues.ChatMessageRoles.System, "You are a helpful, slightly sarcastic, assistant with a random name and cat fixation. You talk about cats all the time."),
-            new ChatMessage(StaticValues.ChatMessageRoles.System, "You have an imaginary cat whos name changes each time you mention them.")
+            new ChatMessage(StaticValues.ChatMessageRoles.System, "You are a helpful, slightly sarcastic, assistant with a cat fixation. You talk about cats all the time."),
+            new ChatMessage(StaticValues.ChatMessageRoles.System, "You have an imaginary cat who's name changes each time you mention them."),
         });
+
+        _history = LoadHistory();
 
         while (true)
         {
             var prompt = ReadPrompt();
-            if(await ProcessAsync(prompt))
+            if (await ProcessAsync(prompt))
             {
                 break;
             }
         }
     }
 
-
     private static string ReadPrompt()
     {
         Console.WriteLine();
-        //var c = Console.ForegroundColor;
-        //Console.ForegroundColor = ConsoleColor.Green;
         Console.Write("> ");
-
-        var prompt = Console.ReadLine();
-        //Console.ForegroundColor = c;
-        return prompt??"";
+        return Console.ReadLine() ?? "";
     }
 
 
     private Task<bool> ProcessAsync(string prompt)
     {
-        var x = _commands.ContainsKey(prompt) 
-            ? _commands[prompt] 
+        var x = _commands.ContainsKey(prompt)
+            ? _commands[prompt]
             : ProcessChatAsync;
 
         return x(prompt);
     }
 
+    private IEnumerable<TimedMessage> History => _history.Where(m => m.TimestampUtc > DateTime.UtcNow.Subtract(_conversationLength));
 
     private async Task<bool> ProcessChatAsync(string prompt)
     {
-        _messages.Add(new ChatMessage(StaticValues.ChatMessageRoles.User, prompt));
+        _history.Add(new TimedMessage(StaticValues.ChatMessageRoles.User, prompt));
 
-        var messages = _prime.Concat(_messages).ToList();
+        var messages = _prime.Concat(History.Select(m => m.ToChatMessage())).ToList();
 
-        // @TODO: Instead of pushing entire history up, just push initial prime stuff & all *recent* stuff...
         var completionResult = _ai.ChatCompletion.CreateCompletionAsStream(new ChatCompletionCreateRequest
         {
             Messages = messages,
@@ -88,7 +114,7 @@ internal class Assistant
             if (completion.Successful)
             {
                 var content = completion.Choices.First().Message.Content;
-                if(content != null)
+                if (content != null)
                 {
                     rs += content;
                     formatter.Append(content);
@@ -107,15 +133,43 @@ internal class Assistant
 
         formatter.Finish();
 
-        _messages.Add(new ChatMessage(StaticValues.ChatMessageRoles.Assistant, rs));
+        _history.Add(new TimedMessage(StaticValues.ChatMessageRoles.Assistant, rs));
+
+        await SaveHistoryAsync();
 
         return false;
     }
 
-    
+
+    private List<TimedMessage> LoadHistory()
+    {
+        var history = new List<TimedMessage>();
+        var path = Path.Combine(_basePath, "history.json");
+        if (File.Exists(path))
+        {
+            history = JsonSerializer.Deserialize<List<TimedMessage>>(File.ReadAllText(path)) ?? history;
+        }
+
+        // Reset chat history
+        history.ForEach(h => h.TimestampUtc = DateTime.UtcNow);
+
+        return history;
+    }
+
+    private async Task SaveHistoryAsync()
+    {
+        var path = Path.Combine(_basePath, "history.json");
+        var json = JsonSerializer.Serialize(History);
+        await File.WriteAllTextAsync(path, json);
+    }
+
+
     private Task<bool> Cfg(string arg)
     {
-        Console.WriteLine("TODO: Cfg stuff");
+        Console.WriteLine(Path.Combine(_basePath, "appsettings.json"));
+        Console.WriteLine($"Conversation Length: {_conversationLength}");
+        Console.WriteLine($"History length: {History.Count()}");
+
         return Task.FromResult(false);
     }
 }

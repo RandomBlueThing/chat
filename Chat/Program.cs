@@ -23,15 +23,9 @@ finally
 
 static Assistant? CreateAssistant()
 {
-    var cfgPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "chat", "appsettings.json");
-    if (!File.Exists(cfgPath))
-    {
-        throw new FileNotFoundException($"Config file not found: {cfgPath}");
-    }
-    Console.Write($"Found cfg: {cfgPath}");
-
     var cfg = new ConfigurationBuilder()
-        .AddJsonFile(cfgPath, optional: false, reloadOnChange: true)
+        .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+        .AddJsonFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "chat", "appsettings.json"), optional: true, reloadOnChange: true)
         .Build();
 
     var services = new ServiceCollection();
