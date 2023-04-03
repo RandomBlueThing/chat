@@ -4,53 +4,31 @@ using OpenAI.GPT3.ObjectModels;
 using Microsoft.Extensions.Configuration;
 using System.Text.Json.Serialization;
 using System.Text.Json;
+using System.Xml.Linq;
 
 namespace Chat;
-
-internal struct TimedMessage
-{
-    public TimedMessage(string role, string message)
-    {
-        TimestampUtc = DateTime.UtcNow;
-        Role = role;
-        Message = message;
-    }
-
-    public DateTime TimestampUtc { get; set; }
-    public string Role { get; set; }
-    public string Message { get; set; }
-
-    public ChatMessage ToChatMessage()
-    {
-        return new ChatMessage(Role, Message);
-    }
-}
 
 internal class Assistant
 {
     private readonly IOpenAIService _ai;
     private readonly IConfiguration _cfg;
-    private readonly Dictionary<string, Func<string, Task<bool>>> _commands;
+    private readonly Command[] _commands;
     private readonly TimeSpan _conversationLength;
-    private List<TimedMessage> _history = new List<TimedMessage>();
     private readonly List<ChatMessage> _prime = new List<ChatMessage>();
-    private static string _basePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "chat");
+    private readonly static string _basePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "chat");
+    private List<TimedMessage> _history = new List<TimedMessage>();
 
 
     public Assistant(IOpenAIService ai, IConfiguration cfg)
     {
         _ai = ai;
         _cfg = cfg;
-        _commands = new Dictionary<string, Func<string, Task<bool>>>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "quit", p => Task.FromResult(true) },
-            { "bye", p => Task.FromResult(true) },
-            { "exit", p => Task.FromResult(true) },
-            { "!help", Help },
-            { "!", Help },
-            { "!cls", p => { Console.Clear(); return Task.FromResult(false); } },
-            { "!forget", p => { Console.WriteLine("Dropping history"); _history.Clear(); return Task.FromResult(false); } },
-            { "", p => Task.FromResult(false) }
+        _commands = new Command[] {
+            new Command(new[]{"quit", "bye", "exit" }, "Terminate", willTerminate: true),
+            new Command("!help", "Show help", Help),
+            new Command("!forget", "Forget this conversaion", Forget),
+            new Command("!history", "Show conversation history", DumpHistory),
+            new Command("!cls", "Clear screen", CLS)
         };
         _conversationLength = TimeSpan.Parse(_cfg["conversation-length"] ?? "00:15:00");
     }
@@ -70,9 +48,19 @@ internal class Assistant
         while (true)
         {
             var prompt = ReadPrompt();
-            if (await ProcessAsync(prompt))
+
+            var cmd = _commands.FirstOrDefault(x => x.CanExecute(prompt));
+            if(cmd != null)
             {
-                break;
+                await cmd.ExecuteAsync(prompt);
+                if (cmd.WillTerminate)
+                {
+                    break;
+                }
+            }
+            else
+            {
+                await ProcessChatAsync(prompt);
             }
         }
     }
@@ -84,15 +72,6 @@ internal class Assistant
         return Console.ReadLine() ?? "";
     }
 
-
-    private Task<bool> ProcessAsync(string prompt)
-    {
-        var x = _commands.ContainsKey(prompt)
-            ? _commands[prompt]
-            : ProcessChatAsync;
-
-        return x(prompt);
-    }
 
     private IEnumerable<TimedMessage> History => _history.Where(m => m.TimestampUtc > DateTime.UtcNow.Subtract(_conversationLength));
 
@@ -165,20 +144,42 @@ internal class Assistant
         await File.WriteAllTextAsync(path, json);
     }
 
+    private Task DumpHistory(string arg)
+    {
+        foreach (var h in History.OrderBy(h => h.TimestampUtc))
+        {
+            Console.WriteLine($"[{h.TimestampUtc:HH:mm:ss}] [{h.Role}] {h.Message.Truncate(60)}");
+        }
 
-    private Task<bool> Help(string arg)
+        return Task.CompletedTask;
+    }
+
+    private Task Forget(string arg)
+    {
+        return Task.CompletedTask;
+    }
+
+    private Task CLS(string arg)
+    {
+        Console.Clear();
+        return Task.CompletedTask;
+    }
+
+    private Task Help(string arg)
     {
         Console.WriteLine("Commands:");
-        Console.WriteLine("  !help - Show this help");
-        Console.WriteLine("  !cls - Clear screen");
-        Console.WriteLine("  !forget - Forget history");
-        Console.WriteLine("  quit/exit/bye - Quit");
+        foreach(var c in _commands)
+        {
+            Console.WriteLine($"  {string.Join(",", c.Names)} - {c.Description}");
+        }
+
+        Console.WriteLine();
 
         Console.WriteLine("Information:");
-        Console.WriteLine("  Configuration: " + _basePath);
-        Console.WriteLine($"  Conversation Length: {_conversationLength}");
+        Console.WriteLine($"  Configuration: {_basePath}");
+        Console.WriteLine($"  Memory length (time): {_conversationLength}");
         Console.WriteLine($"  History length: {History.Count()}");
 
-        return Task.FromResult(false);
+        return Task.CompletedTask;
     }
 }
