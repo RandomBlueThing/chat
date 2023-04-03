@@ -13,7 +13,14 @@ try
 }
 catch (Exception ex)
 {
-    Console.WriteLine(ex.Message);
+    Console.WriteLine("Ooops, bust it: " + ex.Message);
+    Console.WriteLine("-------------------------------------------------------------------");
+    Console.WriteLine("Maybe email the below to PJ, whatevs.");
+    Console.WriteLine();
+    Console.WriteLine(ex);
+    Console.WriteLine("-------------------------------------------------------------------");
+    Console.WriteLine("key");
+    Console.ReadKey(true);
 }
 finally
 {
